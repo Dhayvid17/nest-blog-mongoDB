@@ -9,9 +9,9 @@ import {
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 
-export class CreateUserDto {
+export class RegisterDto {
   @IsEmail({}, { message: 'Please provide a valid email address' })
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'Email is required' })
   @Matches(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/, {
     message: 'Email format is invalid',
   })
@@ -23,7 +23,7 @@ export class CreateUserDto {
   @IsString()
   @IsNotEmpty({ message: 'Name is required' })
   @MinLength(2, { message: 'Name must be at least 2 characters long' })
-  @MaxLength(50)
+  @MaxLength(50, { message: 'Name must not exceed 50 characters' })
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   name: string;
 

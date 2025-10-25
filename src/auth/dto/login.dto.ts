@@ -1,17 +1,16 @@
+import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsNotEmpty,
   IsString,
-  MinLength,
-  IsOptional,
-  MaxLength,
   Matches,
+  MaxLength,
+  MinLength,
 } from 'class-validator';
-import { Transform } from 'class-transformer';
 
-export class CreateUserDto {
+export class LoginDto {
   @IsEmail({}, { message: 'Please provide a valid email address' })
-  @IsNotEmpty()
+  @IsNotEmpty({ message: 'Email is required' })
   @Matches(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/, {
     message: 'Email format is invalid',
   })
@@ -19,13 +18,6 @@ export class CreateUserDto {
     typeof value === 'string' ? value.trim().toLowerCase() : value,
   )
   email: string;
-
-  @IsString()
-  @IsNotEmpty({ message: 'Name is required' })
-  @MinLength(2, { message: 'Name must be at least 2 characters long' })
-  @MaxLength(50)
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  name: string;
 
   @IsString()
   @IsNotEmpty({ message: 'Password is required' })
@@ -38,8 +30,5 @@ export class CreateUserDto {
   password: string;
 
   @IsString()
-  @IsOptional()
-  @MaxLength(500)
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
-  bio?: string;
+  deviceInfo?: string;
 }
