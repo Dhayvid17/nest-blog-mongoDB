@@ -7,8 +7,10 @@ import {
   IsOptional,
   MaxLength,
   Matches,
+  IsEnum,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { UserRole } from 'src/schemas/user.schema';
 
 export class UpdateUserDto extends PartialType(CreateUserDto) {
   @IsEmail({}, { message: 'Please provide a valid email address' })
@@ -42,4 +44,8 @@ export class UpdateUserDto extends PartialType(CreateUserDto) {
   @MaxLength(500)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   bio?: string;
+
+  @IsOptional()
+  @IsEnum(UserRole, { message: 'Role must be either admin or user' })
+  role?: UserRole;
 }

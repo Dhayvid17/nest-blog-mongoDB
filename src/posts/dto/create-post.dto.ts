@@ -31,8 +31,8 @@ export class CreatePostDto {
   published?: boolean;
 
   @IsMongoId({ message: 'Invalid author ID format' })
-  @IsNotEmpty()
-  authorId: string;
+  @IsOptional()
+  authorId?: string;
 
   @ArrayUnique()
   @IsArray()

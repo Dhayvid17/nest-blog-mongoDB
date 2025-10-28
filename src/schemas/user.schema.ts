@@ -31,16 +31,16 @@ export class User extends Document {
       {
         token: { type: String, required: true },
         createdAt: { type: Date, default: Date.now },
-        upDatedAt: { type: Date, default: Date.now },
+        expiresAt: { type: Date, default: Date.now },
         deviceInfo: { type: String, default: '' },
       },
     ],
     default: [],
   })
-  refreshToken: Array<{
+  refreshTokens: Array<{
     token: string;
     createdAt: Date;
-    upDatedAt: Date;
+    expiresAt: Date;
     deviceInfo?: string;
   }>;
 

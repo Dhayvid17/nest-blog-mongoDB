@@ -11,9 +11,10 @@ services:
     restart: unless-stopped
     ports:
       - '3001:3000' # Exposes App port External :3001, Internal :3000
+    env_file:
+      - .env.dev
     environment:
-      MONGODB_URI: ${MONGODB_URI}
-      NODE_ENV: ${NODE_ENV:-development}
+      NODE_ENV: dev
       PORT: 3000 # App listens on 3000 internally
     volumes:
       - ./:/usr/src/app

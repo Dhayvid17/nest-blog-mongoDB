@@ -1,6 +1,8 @@
-import { NestFactory } from '@nestjs/core';
+import { NestFactory, Reflector } from '@nestjs/core';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
+import cookieParser from 'cookie-parser';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 
 const MAX_RETRY_ATTEMPTS = 5;
 const RETRY_INTERVAL = 5000; // 5 seconds
@@ -25,6 +27,12 @@ async function bootstrap(retryCount = 0) {
       }),
     );
 
+    // Cookie parser middleware
+    app.use(cookieParser());
+
+    const reflector = app.get(Reflector);
+    app.useGlobalGuards(new JwtAuthGuard(reflector));
+
     // Set a global API prefix
     app.setGlobalPrefix('api');
 
@@ -32,6 +40,8 @@ async function bootstrap(retryCount = 0) {
     app.enableCors({
       origin: process.env.CORS_ORIGIN || '*',
       credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization'],
     });
 
     // Enable shutdown hooks (important for graceful shutdown)
