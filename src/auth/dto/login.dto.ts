@@ -2,6 +2,7 @@ import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsNotEmpty,
+  IsOptional,
   IsString,
   Matches,
   MaxLength,
@@ -29,6 +30,7 @@ export class LoginDto {
   })
   password: string;
 
+  @IsOptional()
   @IsString()
   deviceInfo?: string;
 }

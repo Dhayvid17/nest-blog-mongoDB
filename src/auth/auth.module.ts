@@ -10,10 +10,13 @@ import { AuthService } from './auth.service';
 import { LocalStrategy } from './strategies/local.strategy';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { JwtRefreshStrategy } from './strategies/jwt.refresh.strategy';
+import { ScheduleModule } from '@nestjs/schedule';
+import { AuthCleanupService } from './auth-cleanup.service';
 
 @Module({
   imports: [
     ConfigModule,
+    ScheduleModule.forRoot(),
     MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
     UsersModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
@@ -29,7 +32,13 @@ import { JwtRefreshStrategy } from './strategies/jwt.refresh.strategy';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, LocalStrategy, JwtStrategy, JwtRefreshStrategy],
+  providers: [
+    AuthService,
+    AuthCleanupService,
+    LocalStrategy,
+    JwtStrategy,
+    JwtRefreshStrategy,
+  ],
   exports: [AuthService],
 })
 export class AuthModule {}

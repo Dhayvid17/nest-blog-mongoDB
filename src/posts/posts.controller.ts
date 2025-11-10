@@ -27,8 +27,11 @@ export class PostsController {
   // CREATE NEW POST
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  create(@Body() createPostDto: CreatePostDto, @CurrentUser() user: any) {
-    // Override authorId with current user"s Id to prevent users from creatiing posts as others
+  create(
+    @Body() createPostDto: CreatePostDto,
+    @CurrentUser() user: { _id: string; role: UserRole; email: string },
+  ) {
+    // Override authorId with current user"s Id to prevent users from creating posts as others
     createPostDto.authorId = user._id.toString();
     return this.postsService.create(createPostDto);
   }
@@ -65,42 +68,22 @@ export class PostsController {
   async update(
     @Param('id') id: string,
     @Body() updatePostDto: UpdatePostDto,
-    @CurrentUser() user: { _id: string; role: UserRole },
+    @CurrentUser() user: { _id: string; role: UserRole; email: string },
   ) {
-    // Fetch the post to check ownership
-    const post = await this.postsService.findOne(id);
-    // Allow if user is admin to edit any post, allow only if user is the post author
-    const isAdmin = user.role === UserRole.ADMIN;
-    const isAuthor =
-      (post.authorId as { _id: string })._id.toString() === user._id.toString();
-    if (!isAdmin && !isAuthor)
-      throw new ForbiddenException(
-        'You do not have permission to edit this post',
-      );
-
-    //
-
-    return this.postsService.update(id, updatePostDto);
+    return this.postsService.update(
+      id,
+      updatePostDto,
+      user._id.toString(),
+      user.role,
+    );
   }
 
   // DELETE A POST
   @Delete(':id')
   async remove(
     @Param('id') id: string,
-    @CurrentUser() user: { _id: string; role: UserRole },
+    @CurrentUser() user: { _id: string; role: UserRole; email: string },
   ) {
-    // Fetch the post to check ownership
-    const post = await this.postsService.findOne(id);
-    // Allow if user is admin to delete any post, allow only if user is the post author
-    const isAdmin = user.role === UserRole.ADMIN;
-    const isAuthor =
-      (post.authorId as { _id: string })._id.toString() === user._id.toString();
-
-    if (!isAdmin && !isAuthor)
-      throw new ForbiddenException(
-        'You do not have permission to delete this post',
-      );
-
-    return this.postsService.remove(id);
+    return this.postsService.remove(id, user._id.toString(), user.role);
   }
 }

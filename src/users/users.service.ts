@@ -1,4 +1,7 @@
 import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
@@ -6,11 +9,12 @@ import {
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { InjectModel } from '@nestjs/mongoose';
-import { User } from 'src/schemas/user.schema';
+import { User, UserRole } from 'src/schemas/user.schema';
 import mongoose, { Model } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { Post } from 'src/schemas/post.schema';
 import { Category } from 'src/schemas/category.schema';
+import { isValidObjectId } from 'mongoose';
 
 @Injectable()
 export class UsersService {
@@ -22,12 +26,16 @@ export class UsersService {
 
   // CREATE NEW USER
   async create(createUserDto: CreateUserDto) {
-    try {
-      const existingUser = await this.userModel.findOne({
-        email: createUserDto.email,
-      });
-      if (existingUser) throw new Error('User with this email already exists');
+    const existingUser = await this.userModel.findOne({
+      email: createUserDto.email,
+    });
+    if (existingUser)
+      throw new ConflictException('User with this email already exists');
 
+    // Start Transaction
+    const session = await this.userModel.db.startSession();
+    session.startTransaction();
+    try {
       // Hash password
       const hashedPassword = await bcrypt.hash(createUserDto.password, 10);
       const newUser = new this.userModel({
@@ -37,11 +45,17 @@ export class UsersService {
 
       // Exclude Password from returned user object
       const { password, ...userWithoutPassword } = (
-        await newUser.save()
+        await newUser.save({ session })
       ).toObject();
+
+      await session.commitTransaction();
       return userWithoutPassword;
     } catch (error) {
+      await session.abortTransaction();
+      console.error('User creation failed:', error);
       throw new InternalServerErrorException('Failed to create user');
+    } finally {
+      session.endSession();
     }
   }
 
@@ -67,10 +81,18 @@ export class UsersService {
   }
 
   // GET A SINGLE USER
-  async findOne(id: string) {
+  async findOne(id: string, currentUserId: string, userRole: UserRole) {
     // Check if id is a valid MongoDB ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new InternalServerErrorException('Invalid User ID');
+      throw new BadRequestException('Invalid User ID');
+    }
+
+    // Check if its Admin or Owner
+    const isAdmin = userRole === UserRole.ADMIN;
+    const isOwner = currentUserId === id;
+
+    if (!isAdmin && !isOwner) {
+      throw new ForbiddenException('You can only view your own profile');
     }
 
     // Check if User exists
@@ -93,10 +115,23 @@ export class UsersService {
   }
 
   // UPDATE A USER
-  async update(id: string, updateUserDto: UpdateUserDto) {
+  async update(
+    id: string,
+    updateUserDto: UpdateUserDto,
+    currentUserId: string,
+    userRole: UserRole,
+  ) {
     // Check if id is a valid MongoDB ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new InternalServerErrorException('Invalid User ID');
+      throw new BadRequestException('Invalid User ID');
+    }
+
+    // Check if its Admin or Owner
+    const isAdmin = userRole === UserRole.ADMIN;
+    const isOwner = currentUserId === id;
+
+    if (!isAdmin && !isOwner) {
+      throw new ForbiddenException('You can only update your own profile');
     }
 
     // Check if user exists
@@ -109,7 +144,8 @@ export class UsersService {
       if (key === 'password') return updateUserDto.password !== undefined;
       return (updateUserDto as any)[key] !== (existingUser as any)[key];
     });
-    if (!isDtoEmpty) throw new Error('No changes detected to update');
+    if (!isDtoEmpty)
+      throw new ConflictException('No changes detected to update');
     // If password is being updated, hash it
     if (updateUserDto.password) {
       updateUserDto.password = await bcrypt.hash(updateUserDto.password, 10);
@@ -125,10 +161,14 @@ export class UsersService {
   }
 
   // DELETE A USER
-  async remove(id: string) {
+  async remove(id: string, currentUserId: string) {
     // Check if id is a valid MongoDB ObjectId
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new InternalServerErrorException('Invalid User ID');
+    if (!mongoose.Types.ObjectId.isValid(id))
+      throw new BadRequestException('Invalid User ID');
+
+    // Prevent self-deletion for admins
+    if (currentUserId && id === currentUserId) {
+      throw new ConflictException('You cannot delete your own account');
     }
 
     // Check if User exists
@@ -159,7 +199,18 @@ export class UsersService {
   }
 
   // USER STATS
-  async getUserStats(id: string) {
+  async getUserStats(id: string, currentUserId: string, userRole: UserRole) {
+    // Validate post ID
+    if (!isValidObjectId(id)) throw new BadRequestException('Invalid User ID');
+
+    // Check if its Admin or Owner
+    const isAdmin = userRole === UserRole.ADMIN;
+    const isOwner = currentUserId === id;
+
+    if (!isAdmin && !isOwner) {
+      throw new ForbiddenException('You can only view your own stats');
+    }
+
     const user = await this.userModel
       .findById(id)
       .populate('posts', 'viewCount published')

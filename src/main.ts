@@ -36,7 +36,7 @@ async function bootstrap(retryCount = 0) {
     // Set a global API prefix
     app.setGlobalPrefix('api');
 
-    // Enable CORS for all origins (adjust options for production)
+    // Enable CORS for all origins
     app.enableCors({
       origin: process.env.CORS_ORIGIN || '*',
       credentials: true,

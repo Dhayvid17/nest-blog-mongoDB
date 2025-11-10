@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   InternalServerErrorException,
@@ -44,14 +45,14 @@ export class CategoriesService {
   async findOne(id: string) {
     // Check if id is a valid MongoDB ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new InternalServerErrorException('Invalid category ID');
+      throw new BadRequestException('Invalid category ID');
     }
 
     const category = await this.categoryModel
       .findById(id)
       .populate('posts')
       .exec();
-    if (!category) throw new InternalServerErrorException('Category not found');
+    if (!category) throw new NotFoundException('Category not found');
     return category;
   }
 
@@ -59,7 +60,7 @@ export class CategoriesService {
   async update(id: string, updateCategoryDto: UpdateCategoryDto) {
     // Check if id is a valid MongoDB ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new InternalServerErrorException('Invalid category ID');
+      throw new BadRequestException('Invalid category ID');
     }
 
     // Check if category with the same name exists
@@ -67,6 +68,24 @@ export class CategoriesService {
     if (!existingCategory)
       throw new NotFoundException(`Category with ID ${id} not found`);
 
+    // Check If changes were made
+    const hasChanges = Object.keys(updateCategoryDto).some(
+      (key) => updateCategoryDto[key] !== existingCategory[key],
+    );
+    if (!hasChanges)
+      throw new ConflictException('No changes detected in the update data');
+
+    // Check if changing name to an existing name
+    if (
+      updateCategoryDto.name &&
+      updateCategoryDto.name !== existingCategory.name
+    ) {
+      const nameExists = await this.categoryModel.findOne({
+        name: updateCategoryDto.name,
+      });
+      if (nameExists)
+        throw new ConflictException('Category name already in use');
+    }
     const updatedCategory = await this.categoryModel
       .findByIdAndUpdate(id, updateCategoryDto, { new: true })
       .exec();
@@ -80,14 +99,28 @@ export class CategoriesService {
   async remove(id: string) {
     // Check if id is a valid MongoDB ObjectId
     if (!mongoose.Types.ObjectId.isValid(id)) {
-      throw new InternalServerErrorException('Invalid category ID');
+      throw new BadRequestException('Invalid category ID');
     }
 
     // Check if category exists
-    const existedCategory = await this.categoryModel.findById(id);
+    const existedCategory = await this.categoryModel
+      .findById(id)
+      .populate('posts');
     if (!existedCategory)
-      throw new NotFoundException(`User with ID ${id} not found`);
+      throw new NotFoundException(`Category with ID ${id} not found`);
 
+    // Check for posts that would become orphaned (only have this category)
+    const orphanedPosts = await this.postModel.find({
+      categories: id,
+    });
+
+    for (const post of orphanedPosts) {
+      if (post.categories.length === 1) {
+        throw new ConflictException(
+          `Cannot delete category. Post "${post.title}" would have no categories. Please reassign it first.`,
+        );
+      }
+    }
     // Remove references to this category in posts' categories arrays
     await this.postModel.updateMany(
       { categories: id },

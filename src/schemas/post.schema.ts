@@ -31,3 +31,8 @@ export class Post extends Document {
 }
 
 export const PostSchema = SchemaFactory.createForClass(Post);
+// Add text index for search
+PostSchema.index({ title: 'text', content: 'text' }); // For search
+PostSchema.index({ authorId: 1 }); // For author lookups
+PostSchema.index({ published: 1 }); // For filtering
+PostSchema.index({ createdAt: -1 }); // For sorting

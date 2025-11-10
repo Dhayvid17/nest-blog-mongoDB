@@ -51,20 +51,33 @@ export class JwtRefreshStrategy extends PassportStrategy(
     // Find user and check if refresh token exists in the refreshToken array
     const user = await this.userModel
       .findOne({ _id: payload.sub, 'refreshTokens.token': refreshToken })
-      .select('-password')
+      .select('-password -refreshTokens')
       .exec();
     if (!user)
       throw new UnauthorizedException(
         'Invalid refresh token or user not found',
       );
 
-    // JWT library checks expiration but we need to double-check from DB
-    const tokenData = user.refreshTokens.find(
-      (rt) => rt.token === refreshToken,
-    );
-    if (!tokenData || tokenData.expiresAt < new Date())
+    // Manually check token expiration from DB
+    const tokenData = await this.userModel.findOne({
+      _id: payload.sub,
+      refreshTokens: {
+        $elemMatch: {
+          token: refreshToken,
+          expiresAt: { $gte: new Date() },
+        },
+      },
+    });
+    if (!tokenData)
       throw new UnauthorizedException('Refresh token has expired');
     // Return user with refresh token attached
-    return { ...user.toObject(), refreshToken };
+    return {
+      _id: user._id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      bio: user.bio,
+      refreshToken,
+    };
   }
 }

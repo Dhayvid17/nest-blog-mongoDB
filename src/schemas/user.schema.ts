@@ -32,7 +32,7 @@ export class User extends Document {
         token: { type: String, required: true },
         createdAt: { type: Date, default: Date.now },
         expiresAt: { type: Date, default: Date.now },
-        deviceInfo: { type: String, default: '' },
+        deviceInfo: { type: String, default: 'Unknown Device' },
       },
     ],
     default: [],
@@ -57,3 +57,5 @@ export const UserSchema = SchemaFactory.createForClass(User);
 
 // Index on refreshtokens.token for faster logout operations
 UserSchema.index({ 'refreshTokens.token': 1 });
+UserSchema.index({ 'refreshTokens.expiresAt': 1 }); //Added for cleanup
+UserSchema.index({ email: 1 });

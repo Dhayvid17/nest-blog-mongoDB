@@ -1,7 +1,9 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
 import { CreatePostDto } from './dto/create-post.dto';
@@ -9,7 +11,7 @@ import { UpdatePostDto } from './dto/update-post.dto';
 import { InjectModel } from '@nestjs/mongoose';
 import { isValidObjectId, Model } from 'mongoose';
 import { Post } from 'src/schemas/post.schema';
-import { User } from 'src/schemas/user.schema';
+import { User, UserRole } from 'src/schemas/user.schema';
 import { Category } from 'src/schemas/category.schema';
 
 @Injectable()
@@ -51,34 +53,47 @@ export class PostsService {
     if (categories.length !== categoryIds.length)
       throw new BadRequestException('One or more categories do not exist');
 
-    const post = new this.postModel({
-      ...postData,
-      authorId: authorId,
-      categories: categoryIds,
-    });
-    await post.save();
+    // Start Session
+    const session = await this.postModel.db.startSession();
+    session.startTransaction();
 
-    // Add reference to this post in the author's posts array
-    await this.userModel.findByIdAndUpdate(
-      authorId,
-      {
-        $push: { posts: post._id },
-      },
-      { new: true },
-    );
+    try {
+      const post = new this.postModel({
+        ...postData,
+        authorId: authorId,
+        categories: categoryIds,
+      });
+      await post.save({ session });
 
-    // Add reference to each category in the post's categories array
-    await this.categoryModel.updateMany(
-      { _id: { $in: categoryIds } },
-      { $push: { posts: post._id } },
-    );
+      // Add reference to this post in the author's posts array
+      await this.userModel.findByIdAndUpdate(
+        authorId,
+        {
+          $push: { posts: post._id },
+        },
+        { new: true, session },
+      );
 
-    // Populate author and categories before returning
-    await post.populate([
-      { path: 'authorId', select: 'id username email' },
-      { path: 'categories', select: 'id name' },
-    ]);
-    return post;
+      // Add reference to each category in the post's categories array
+      await this.categoryModel.updateMany(
+        { _id: { $in: categoryIds } },
+        { $push: { posts: post._id } },
+        { session },
+      );
+
+      await session.commitTransaction();
+      // Populate author and categories before returning
+      await post.populate([
+        { path: 'authorId', select: 'id name email' },
+        { path: 'categories', select: 'id name' },
+      ]);
+      return post;
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
   }
 
   // GET ALL POSTS (with optional published filter and pagination)
@@ -87,31 +102,30 @@ export class PostsService {
     const limit = Math.min(take ?? 10, 100); // Default 10, max 100
 
     const filter = published !== undefined ? { published } : {};
-
-    // Fetch posts with filters, pagination, and populate author and categories
-    const posts = await this.postModel
-      .find(filter)
-      .skip(offset)
-      .limit(limit)
-      .populate([
-        { path: 'authorId', select: 'id username email' },
-        { path: 'categories', select: 'id name' },
-      ])
-      .sort({ createdAt: -1 });
-
-    return posts;
+    try {
+      // Fetch posts with filters, pagination, and populate author and categories
+      const posts = await this.postModel
+        .find(filter)
+        .skip(offset)
+        .limit(limit)
+        .populate([
+          { path: 'authorId', select: 'id name email' },
+          { path: 'categories', select: 'id name' },
+        ])
+        .sort({ createdAt: -1 })
+        .exec();
+      return posts;
+    } catch (error) {
+      throw new InternalServerErrorException('Failed to get all posts');
+    }
   }
 
-  // GET A SINGLE POST BY ID (Increment viewCount atomatically)
+  // GET A SINGLE POST BY ID (Increment viewCount automatically)
   async findOne(id: string) {
     // Validate post ID
-    if (!isValidObjectId(id)) throw new NotFoundException('Invalid post ID');
+    if (!isValidObjectId(id)) throw new BadRequestException('Invalid post ID');
 
-    // Check if the post exists
-    const existingPost = await this.postModel.findById(id).exec();
-    if (!existingPost)
-      throw new NotFoundException(`Post with ID ${id} not found`);
-
+    // Find Post and update the viewcount
     const post = await this.postModel
       .findByIdAndUpdate(
         id,
@@ -120,7 +134,7 @@ export class PostsService {
       )
       .populate({
         path: 'authorId',
-        select: 'id username email',
+        select: 'id name email',
       })
       .populate({
         path: 'categories',
@@ -133,18 +147,58 @@ export class PostsService {
   }
 
   // UPDATE A POST
-  async update(id: string, updatePostDto: UpdatePostDto) {
+  async update(
+    id: string,
+    updatePostDto: UpdatePostDto,
+    currentUserId: string,
+    userRole: UserRole,
+  ) {
     // Validate post ID
-    if (!isValidObjectId(id)) throw new NotFoundException('Invalid post ID');
+    if (!isValidObjectId(id)) throw new BadRequestException('Invalid post ID');
 
     const { categoryIds, authorId, ...postData } = updatePostDto;
 
-    // Validate author ID if provided
-    if (authorId && !isValidObjectId(authorId))
-      throw new BadRequestException('Invalid author ID');
+    // Check if the post exists
+    const existingPost = await this.postModel.findById(id).exec();
+    if (!existingPost)
+      throw new NotFoundException(`Post with ID ${id} not found`);
 
+    // Ownership & role check
+    const isAdmin = userRole === UserRole.ADMIN;
+    const isAuthor =
+      existingPost.authorId.toString() === currentUserId.toString();
+    if (!isAdmin && !isAuthor)
+      throw new ForbiddenException(
+        'You do not have permission to edit this post',
+      );
+
+    // Handle authorId changes (admin only)
+    if (authorId !== undefined) {
+      // Validate author ID format
+      if (!isValidObjectId(authorId))
+        throw new BadRequestException('Invalid author ID');
+      // Check if authorId is actually changing
+      if (authorId.toString() !== existingPost.authorId.toString()) {
+        // Only admins can change the author
+        if (!isAdmin) {
+          throw new ForbiddenException(
+            'Only administrators can change the author of a post',
+          );
+        }
+
+        // Verify the new author exists
+        const newAuthor = await this.userModel.findById(authorId).exec();
+        if (!newAuthor) {
+          throw new NotFoundException(`Author with ID ${authorId} not found`);
+        }
+      }
+    }
     // Validate category IDs if provided
-    if (categoryIds) {
+    if (categoryIds !== undefined) {
+      if (categoryIds.length === 0) {
+        throw new BadRequestException('At least one category is required');
+      }
+
       for (const categoryId of categoryIds) {
         if (!isValidObjectId(categoryId))
           throw new BadRequestException(`Invalid category ID: ${categoryId}`);
@@ -158,133 +212,188 @@ export class PostsService {
         throw new BadRequestException('One or more categories do not exist');
     }
 
-    // Verify that author exists if authorId is provided
-    if (authorId) {
-      const author = await this.userModel.findById(authorId);
-      if (!author) throw new BadRequestException('Author does not exist');
-    }
-    // Check if the post exists
-    const existingPost = await this.postModel.findById(id).exec();
-    if (!existingPost)
-      throw new NotFoundException(`Post with ID ${id} not found`);
-
-    // Handle authorId change
-    if (authorId && authorId !== existingPost.authorId.toString()) {
-      // Remove post reference from old author
-      await this.userModel.findByIdAndUpdate(existingPost.authorId, {
-        $pull: { posts: id },
-      });
-
-      // Add post reference to new author
-      await this.userModel.findByIdAndUpdate(authorId, {
-        $addToSet: { posts: id },
-      });
-    }
-    // Handle categoryIds change
-    if (categoryIds) {
-      const existingCategoryIds = existingPost.categories.map((c) =>
-        c.toString(),
-      );
-      const categoriesToAdd = categoryIds;
-
-      // Remove post reference from old categories
-      const categoriesToRemove = existingCategoryIds.filter(
-        (catId) => !categoriesToAdd.includes(catId),
-      );
-      if (categoriesToRemove.length > 0) {
-        await this.categoryModel.updateMany(
-          { _id: { $in: categoriesToRemove } },
-          { $pull: { posts: id } },
-        );
-      }
-
-      // Add post reference to new categories
-      const categoriesToActuallyAdd = categoriesToAdd.filter(
-        (catId) => !existingCategoryIds.includes(catId),
-      );
-      if (categoriesToActuallyAdd.length > 0) {
-        await this.categoryModel.updateMany(
-          { _id: { $in: categoriesToActuallyAdd } },
-          { $push: { posts: id } },
-        );
-      }
-    }
-
     // Check for actual changes
-    const hasDataChanges = Object.keys(postData).some(
-      (key) => postData[key] !== existingPost[key],
-    );
+    const hasDataChanges = Object.keys(postData).some((key) => {
+      const newValue = postData[key];
+      const oldValue = existingPost[key];
+
+      if (typeof newValue === 'string' && typeof oldValue === 'string') {
+        return newValue.trim() !== oldValue.trim();
+      }
+      return newValue !== oldValue;
+    });
+
     const existingCategoryIds = existingPost.categories.map((c) =>
       c.toString(),
     );
     const hasCategoryChanges =
-      categoryIds &&
-      (existingCategoryIds.some((catId) => !categoryIds?.includes(catId)) ||
-        categoryIds.length !== existingCategoryIds.length);
+      categoryIds !== undefined &&
+      (categoryIds.length !== existingCategoryIds.length ||
+        categoryIds.some((catId) => !existingCategoryIds.includes(catId)));
 
-    if (!hasDataChanges && !hasCategoryChanges && !authorId)
+    const hasAuthorChange =
+      authorId !== undefined &&
+      authorId.toString() !== existingPost.authorId.toString();
+
+    // Check if any field was provided
+    const hasAnyFieldProvided =
+      Object.keys(postData).length > 0 ||
+      categoryIds !== undefined ||
+      authorId !== undefined;
+
+    if (!hasAnyFieldProvided) {
+      throw new BadRequestException('No update data provided');
+    }
+    if (!hasDataChanges && !hasCategoryChanges && !hasAuthorChange)
       throw new ConflictException('No changes detected in the update data');
 
-    // Build update object
-    const updateData: any = { ...postData };
-    if (authorId) updateData.authorId = authorId;
-    if (categoryIds) updateData.categories = categoryIds;
+    // Start Session (only after all validations pass)
+    const session = await this.postModel.db.startSession();
+    session.startTransaction();
 
-    // Proceed with the update
-    const updatedPost = await this.postModel
-      .findByIdAndUpdate(id, updateData, {
-        new: true,
-      })
-      .populate({
-        path: 'authorId',
-        select: 'id username email',
-      })
-      .populate({
-        path: 'categories',
-        select: 'id name',
-      })
-      .exec();
-    return updatedPost;
+    try {
+      // Handle authorId change
+      if (hasAuthorChange) {
+        // Remove post reference from old author
+        await this.userModel.findByIdAndUpdate(
+          existingPost.authorId,
+          {
+            $pull: { posts: id },
+          },
+          { session },
+        );
+
+        // Add post reference to new author
+        await this.userModel.findByIdAndUpdate(
+          authorId,
+          {
+            $addToSet: { posts: id },
+          },
+          { session },
+        );
+      }
+      // Handle categoryIds change
+      if (hasCategoryChanges) {
+        const categoriesToAdd = categoryIds!;
+
+        // Remove post reference from old categories
+        const categoriesToRemove = existingCategoryIds.filter(
+          (catId) => !categoriesToAdd.includes(catId),
+        );
+        if (categoriesToRemove.length > 0) {
+          await this.categoryModel.updateMany(
+            { _id: { $in: categoriesToRemove } },
+            { $pull: { posts: id } },
+            { session },
+          );
+        }
+
+        // Add post reference to new categories
+        const categoriesToActuallyAdd = categoriesToAdd.filter(
+          (catId) => !existingCategoryIds.includes(catId),
+        );
+        if (categoriesToActuallyAdd.length > 0) {
+          await this.categoryModel.updateMany(
+            { _id: { $in: categoriesToActuallyAdd } },
+            { $push: { posts: id } },
+            { session },
+          );
+        }
+      }
+
+      // Build update object
+      const dataToUpdate: any = { ...postData };
+      if (hasAuthorChange) dataToUpdate.authorId = authorId;
+      if (hasCategoryChanges) dataToUpdate.categories = categoryIds;
+
+      // Proceed with the update
+      const updatedPost = await this.postModel
+        .findByIdAndUpdate(id, dataToUpdate, {
+          new: true,
+          session,
+        })
+        .populate({
+          path: 'authorId',
+          select: 'id name email',
+        })
+        .populate({
+          path: 'categories',
+          select: 'id name',
+        })
+        .exec();
+      await session.commitTransaction();
+      return updatedPost;
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
   }
 
   // DELETE A POST
-  async remove(id: string) {
+  async remove(id: string, currentUserId: string, userRole: UserRole) {
     // Validate post ID
-    if (!isValidObjectId(id)) throw new NotFoundException('Invalid post ID');
+    if (!isValidObjectId(id)) throw new BadRequestException('Invalid post ID');
 
     // Check if the post exists and delete
     const existingPost = await this.postModel.findById(id).exec();
     if (!existingPost)
       throw new NotFoundException(`Post with ID ${id} not found`);
 
-    const deletedPost = await this.postModel
-      .findByIdAndDelete(id)
-      .populate({
-        path: 'authorId',
-        select: 'id username email',
-      })
-      .populate({
-        path: 'categories',
-        select: 'id name',
-      })
-      .exec();
+    // Allow if user is admin to delete any post, allow only if user is the post author
+    const isAdmin = userRole === UserRole.ADMIN;
+    const isAuthor =
+      existingPost.authorId.toString() === currentUserId.toString();
+    if (!isAdmin && !isAuthor)
+      throw new ForbiddenException(
+        'You do not have permission to delete this post',
+      );
+    // Start Session
+    const session = await this.postModel.db.startSession();
+    session.startTransaction();
 
-    if (!deletedPost)
-      throw new NotFoundException(`Post with ID ${id} not found`);
+    try {
+      const deletedPost = await this.postModel
+        .findByIdAndDelete(id)
+        .populate({
+          path: 'authorId',
+          select: 'id name email',
+        })
+        .populate({
+          path: 'categories',
+          select: 'id name',
+        })
+        .session(session)
+        .exec();
 
-    // Remove references to this post in users' posts arrays
-    await this.userModel.findByIdAndUpdate(deletedPost.authorId, {
-      $pull: { posts: id },
-    });
+      if (!deletedPost)
+        throw new NotFoundException(`Post with ID ${id} not found`);
 
-    // Remove references to this post in categories' posts arrays
-    const categoryIds = deletedPost.categories.map((cat) => cat._id || cat);
-    await this.categoryModel.updateMany(
-      { _id: { $in: categoryIds } },
-      { $pull: { posts: id } },
-    );
+      // Remove references to this post in users' posts arrays
+      await this.userModel.findByIdAndUpdate(
+        deletedPost.authorId,
+        {
+          $pull: { posts: id },
+        },
+        { session },
+      );
 
-    return deletedPost;
+      // Remove references to this post in categories' posts arrays
+      const categoryIds = deletedPost.categories.map((cat) => cat._id || cat);
+      await this.categoryModel.updateMany(
+        { _id: { $in: categoryIds } },
+        { $pull: { posts: id } },
+        { session },
+      );
+      await session.commitTransaction();
+      return deletedPost;
+    } catch (error) {
+      await session.abortTransaction();
+      throw error;
+    } finally {
+      session.endSession();
+    }
   }
 
   // SEARCH POSTS BY KEYWORD IN TITLE OR CONTENT
@@ -297,7 +406,7 @@ export class PostsService {
       .find({ $text: { $search: query } })
       .populate({
         path: 'authorId',
-        select: 'id username email',
+        select: 'id name email',
       })
       .populate({
         path: 'categories',

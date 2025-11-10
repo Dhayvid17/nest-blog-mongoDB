@@ -42,7 +42,7 @@ export class AuthService {
         await newUser.save()
       ).toObject();
       return {
-        message: 'User registered successfully',
+        message: 'User Registered Successfully',
         user: userWithOutPasswordAndTokens,
       };
     } catch (error) {
@@ -134,6 +134,7 @@ export class AuthService {
     });
     // Return tokens and user Info
     return {
+      message: 'Login Successful',
       accessToken,
       refreshToken,
       user: { id: user._id, email: user.email, role: user.role, bio: user.bio },
@@ -149,6 +150,7 @@ export class AuthService {
       role: user.role,
     };
 
+    // Generate access token(short-lived: 15 minutes)
     const accessToken = this.jwtService.sign(payload, {
       secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
       expiresIn: this.configService.get('JWT_ACCESS_EXPIRATION'),
@@ -212,7 +214,7 @@ export class AuthService {
     return user;
   }
 
-  // Clean Expired Token which is optional
+  // Clean Expired Token
   async cleanExpiredTokens() {
     await this.userModel.updateMany(
       {},
@@ -224,7 +226,6 @@ export class AuthService {
         },
       },
     );
-
     return { message: 'Expired tokens cleaned successfully' };
   }
 }
